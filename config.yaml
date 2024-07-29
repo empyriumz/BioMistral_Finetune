@@ -1,0 +1,18 @@
+data:
+  demographics_path: "data/patient_demographics.pkl.gz"
+  discharge_notes_path: "data/patient_discharge_notes.pkl.gz"
+
+model:
+  embedding_dim: 4096
+  sorter_size: 32
+  save_path: "trained_model.pth"
+
+training:
+  batch_size: 128
+  num_epochs: 10
+  learning_rate: 0.001
+  use_gpu: true
+  gpu_id: 0
+
+evaluation:
+  metric: "c_index"
