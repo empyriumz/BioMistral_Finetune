@@ -1,9 +1,9 @@
 data:
-  embeddings_path: "data/sampled_patient_embedding.h5"
+  embeddings_path: "data/sampled_patient_embedding_biogpt.h5"
   censoring_variability: 30  # Range of variability to add in days to the censoring time
 
 model:
-  embedding_dim: 4096
+  embedding_dim: 1024
   num_documents: 5
   save_path: "trained_model.pth"
 

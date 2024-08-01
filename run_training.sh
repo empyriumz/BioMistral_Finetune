@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start time
 # Define log file name with date and time
-log_file="logs/binary_classification_no_structured_variable_$(date +%m%d%Y_%H%M%S).log"
+log_file="logs/binary_classification_no_structured_variable_biogpt_$(date +%m%d%Y_%H%M%S).log"
 
 start_time=$(date +%s)
 cmd="python -u train_binary_classification.py --config config.yaml"

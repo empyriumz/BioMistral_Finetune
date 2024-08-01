@@ -153,8 +153,8 @@ def process_patient_documents(
 
 def generate_embeddings_gpu(patient_data, gpu_id):
     logger.info(f"Initializing embedding generation on GPU {gpu_id}")
-    tokenizer = BioGptTokenizer.from_pretrained("microsoft/biogpt")
-    model = BioGptForCausalLM.from_pretrained("microsoft/biogpt")
+    tokenizer = BioGptTokenizer.from_pretrained("microsoft/BioGPT-large")
+    model = BioGptForCausalLM.from_pretrained("microsoft/BioGPT-large")
     device = torch.device(f"cuda:{gpu_id}" if gpu_id >= 0 else "cpu")
     model = model.to(device)
     logger.info(f"Model loaded on {'GPU ' + str(gpu_id) if gpu_id >= 0 else 'CPU'}")

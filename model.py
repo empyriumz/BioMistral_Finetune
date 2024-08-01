@@ -27,16 +27,39 @@ class BinaryClassificationModel(nn.Module):
         self.fc2 = nn.Linear(256, 64)
         self.fc3 = nn.Linear(64, 1)
         self.dropout = nn.Dropout(0.3)
+        self.relu = nn.ReLU()
 
     def forward(self, document_embeddings):
         document_embeddings = F.normalize(document_embeddings, p=2, dim=2)
         aggregated_embedding = self.attention_aggregator(document_embeddings)
-        x = F.relu(self.fc1(aggregated_embedding))
+        x = self.relu(self.fc1(aggregated_embedding))
         x = self.dropout(x)
-        x = F.relu(self.fc2(x))
+        x = self.relu(self.fc2(x))
         x = self.dropout(x)
         risk_score = torch.sigmoid(self.fc3(x))
         return risk_score.squeeze()
 
-    def get_risk_prediction(self, risk_score):
-        return risk_score
+
+class BinaryClassificationModelSimple(nn.Module):
+    """
+    No attention mechanism
+    """
+
+    def __init__(self, embedding_dim):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.fc1 = nn.Linear(embedding_dim, 256)
+        self.fc2 = nn.Linear(256, 64)
+        self.fc3 = nn.Linear(64, 1)
+        self.dropout = nn.Dropout(0.3)
+        self.relu = nn.ReLU()
+
+    def forward(self, document_embeddings):
+        document_embeddings = F.normalize(document_embeddings, p=2, dim=2)
+        document_embeddings = torch.mean(document_embeddings, dim=1)
+        x = self.relu(self.fc1(document_embeddings))
+        x = self.dropout(x)
+        x = self.relu(self.fc2(x))
+        x = self.dropout(x)
+        risk_score = torch.sigmoid(self.fc3(x))
+        return risk_score.squeeze()
