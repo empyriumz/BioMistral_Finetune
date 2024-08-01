@@ -148,13 +148,13 @@ class AttentionAggregator(nn.Module):
         attention_weights = self.attention(embeddings)  # (batch_size, num_documents, 1)
         attention_weights = F.softmax(attention_weights, dim=1)
 
-        # Calculate time weights
+        # # Calculate time weights
         # time_weights = self.time_weight(
         #     time_diffs.unsqueeze(-1)
         # )  # (batch_size, num_documents, 1)
         # time_weights = torch.sigmoid(time_weights)  # Normalize to [0, 1]
 
-        # Combine attention and time weights
+        # # Combine attention and time weights
         # combined_weights = attention_weights * time_weights
 
         # Apply weights to embeddings
@@ -216,12 +216,6 @@ class SurvivalModel(nn.Module):
 
     def get_risk_scores(self, document_embeddings, time_diffs, structured_data):
         document_embeddings = F.normalize(document_embeddings, p=2, dim=2)
-        # time_diffs = torch.where(
-        #     torch.isnan(time_diffs),
-        #     torch.tensor(-1e8).to(time_diffs.device),
-        #     time_diffs,
-        # )
-
         aggregated_embedding = self.attention_aggregator(
             document_embeddings, time_diffs
         )

@@ -1,18 +1,38 @@
 import torch
 import argparse
-from torch.utils.data import DataLoader
-import numpy as np
-from sksurv.metrics import concordance_index_ipcw, cumulative_dynamic_auc
 import yaml
+import os
+import numpy as np
+from torch.utils.data import DataLoader
+from sksurv.metrics import concordance_index_ipcw, cumulative_dynamic_auc
 from model import BinaryClassificationModel
-from train import load_data, prepare_data, custom_collate
+from data_processing import load_data, prepare_data, custom_collate
+from utils import save_config
 
 
 def train_binary_model(
-    model, train_loader, val_loader, y_train, y_val, num_epochs, learning_rate, device
+    model,
+    train_loader,
+    val_loader,
+    y_train,
+    y_val,
+    num_epochs,
+    learning_rate,
+    device,
+    patience,
+    save_dir,
+    config,
 ):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = torch.nn.BCELoss()
+
+    best_val_c_index = 0
+    epochs_without_improvement = 0
+    best_model_state = None
+
+    # Ensure save_dir exists
+    os.makedirs(save_dir, exist_ok=True)
+    model_save_path = os.path.join(save_dir, "best_model.pth")
 
     for epoch in range(num_epochs):
         model.train()
@@ -47,7 +67,28 @@ def train_binary_model(
             f"Val C-index: {val_c_index:.3f}, Val Mean AUC: {val_mean_auc:.3f}"
         )
 
-    return model
+        if val_c_index > best_val_c_index:
+            best_val_c_index = val_c_index
+            epochs_without_improvement = 0
+            best_model_state = model.state_dict()
+
+            # Save the best model and configuration
+            torch.save(best_model_state, model_save_path)
+            save_config(config, save_dir)
+            print(f"New best model saved with C-index: {best_val_c_index:.3f}\n")
+        else:
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= patience:
+            print(f"Early stopping triggered after {epoch + 1} epochs\n")
+            break
+
+    if epoch == num_epochs - 1:
+        print("Training completed without early stopping")
+
+    # Load the best model before returning
+    model.load_state_dict(best_model_state)
+    return model, best_val_c_index
 
 
 def evaluate_binary_model(model, data_loader, y_train, y_val, device):
@@ -112,9 +153,11 @@ def main(config_path):
     else:
         device = torch.device("cpu")
 
-    binary_model = binary_model.to(device)
+    output_dir = config["training"]["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
 
-    trained_model = train_binary_model(
+    binary_model = binary_model.to(device)
+    best_model, best_val_c_index = train_binary_model(
         binary_model,
         train_loader,
         val_loader,
@@ -123,18 +166,19 @@ def main(config_path):
         num_epochs=config["training"]["num_epochs"],
         learning_rate=config["training"]["learning_rate"],
         device=device,
+        patience=config["training"]["early_stopping_patience"],
+        save_dir=output_dir,
+        config=config,
     )
 
     final_c_index, final_auc, final_mean_auc = evaluate_binary_model(
-        trained_model, val_loader, y_train, y_val, device
+        best_model, val_loader, y_train, y_val, device
     )
+    print(f"Best Validation C-index: {best_val_c_index:.3f}")
     print(f"Final C-index (IPCW): {final_c_index:.3f}")
     print(f"Final AUC at 6 months: {final_auc[0]:.3f}")
     print(f"Final AUC at 12 months: {final_auc[1]:.3f}")
     print(f"Final Mean AUC: {final_mean_auc:.3f}")
-
-    # Save the model
-    torch.save(trained_model.state_dict(), config["model"]["save_path"])
 
 
 if __name__ == "__main__":

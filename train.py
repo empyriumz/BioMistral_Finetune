@@ -1,162 +1,14 @@
 import torch
 import argparse
-from torch.utils.data import DataLoader, Dataset
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-import pandas as pd
-import numpy as np
-from sksurv.metrics import concordance_index_ipcw, cumulative_dynamic_auc
-from sksurv.util import Surv
 import yaml
-import h5py
+import os
+import numpy as np
+from torch.utils.data import DataLoader
+from sksurv.metrics import concordance_index_ipcw, cumulative_dynamic_auc
 from model import SurvivalModel
+from data_processing import load_data, prepare_data, custom_collate
+from utils import save_config
 from loss import diffsurv_loss
-from utils import add_censoring_variability
-
-
-class PatientDataset(Dataset):
-    def __init__(
-        self,
-        embeddings,
-        time_to_discharge,
-        structured_data,
-        survival_times,
-        event_indicators,
-    ):
-        self.embeddings = embeddings
-        self.time_to_discharge = time_to_discharge
-        self.structured_data = structured_data
-        self.survival_times = survival_times
-        self.event_indicators = event_indicators
-
-    def __len__(self):
-        return len(self.embeddings)
-
-    def __getitem__(self, idx):
-        return (
-            torch.tensor(self.embeddings[idx], dtype=torch.float32),
-            torch.tensor(self.time_to_discharge[idx], dtype=torch.float32),
-            torch.tensor(self.structured_data[idx], dtype=torch.float32),
-            torch.tensor(self.survival_times[idx], dtype=torch.float32),
-            torch.tensor(self.event_indicators[idx], dtype=torch.float32),
-        )
-
-
-def load_data(embeddings_path, demographics_path):
-    with h5py.File(embeddings_path, "r") as hf:
-        patient_ids = hf["patient_ids"][()]
-        embeddings = []
-        time_to_discharge = []
-        survival_times = []
-        for i in range(len(patient_ids)):
-            embeddings.append(hf[f"patient_{i}/embedding"][()])
-            time_to_discharge.append(hf[f"patient_{i}/time_to_discharge"][()])
-            survival_times.append(hf[f"patient_{i}/survival_time"][()])
-
-    demographics = pd.read_pickle(demographics_path)
-
-    data = pd.DataFrame(
-        {
-            "subject_id": patient_ids,
-            "embeddings": embeddings,
-            "time_to_discharge": time_to_discharge,
-            "survival_time": survival_times,
-        }
-    )
-    data = pd.merge(data, demographics, on="subject_id", how="inner")
-
-    # Select structured data columns (all columns except the specified ones)
-    exclude_columns = [
-        "subject_id",
-        "survival_time",
-        "embeddings",
-        "dod",
-        "dischtime",
-        "time_to_discharge",
-        "ind_death",
-    ]
-    structured_columns = [col for col in data.columns if col not in exclude_columns]
-    X_structured = data[structured_columns]
-
-    return {
-        "embeddings": data["embeddings"].tolist(),
-        "time_to_discharge": data["time_to_discharge"].tolist(),
-        "structured": X_structured,
-        "event_indicators": data["ind_death"].values,
-        "survival_times": data["survival_time"].values,
-    }
-
-
-def prepare_data(data_dict, config):
-    # Convert boolean columns to float
-    bool_columns = data_dict["structured"].select_dtypes(include=[bool]).columns
-    data_dict["structured"][bool_columns] = data_dict["structured"][
-        bool_columns
-    ].astype(float)
-
-    # Check for non-numeric columns (excluding bool which are now float)
-    non_numeric_cols = (
-        data_dict["structured"].select_dtypes(exclude=[np.number]).columns
-    )
-    if len(non_numeric_cols) > 0:
-        raise ValueError(
-            f"Non-numeric columns found in structured data: {non_numeric_cols}"
-        )
-
-    # Scale the numeric data
-    scaler = StandardScaler()
-    structured_scaled = scaler.fit_transform(data_dict["structured"])
-    num_structured_features = structured_scaled.shape[1]
-
-    # Combine all features
-    X = list(
-        zip(data_dict["embeddings"], data_dict["time_to_discharge"], structured_scaled)
-    )
-
-    # Apply censoring variability
-    survival_times, event_indicators = add_censoring_variability(
-        data_dict["survival_times"],
-        data_dict["event_indicators"],
-        variability=config["data"]["censoring_variability"],
-    )
-
-    # Create structured array for sksurv
-    y = Surv.from_arrays(event_indicators, survival_times)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, random_state=42
-    )
-
-    train_dataset = PatientDataset(
-        [x[0] for x in X_train],
-        [x[1] for x in X_train],
-        [x[2] for x in X_train],
-        y_train["time"],
-        y_train["event"],
-    )
-
-    val_dataset = PatientDataset(
-        [x[0] for x in X_test],
-        [x[1] for x in X_test],
-        [x[2] for x in X_test],
-        y_test["time"],
-        y_test["event"],
-    )
-
-    return train_dataset, val_dataset, y_train, y_test, num_structured_features
-
-
-def custom_collate(batch):
-    embeddings, time_to_discharge, structured_data, survival_times, event_indicators = (
-        zip(*batch)
-    )
-    return (
-        torch.tensor(np.array(embeddings), dtype=torch.float32),
-        torch.tensor(np.array(time_to_discharge), dtype=torch.float32),
-        torch.tensor(np.array(structured_data), dtype=torch.float32),
-        torch.tensor(survival_times, dtype=torch.float32),
-        torch.tensor(event_indicators, dtype=torch.float32),
-    )
 
 
 def train_model(
@@ -304,5 +156,9 @@ if __name__ == "__main__":
     print(f"Final AUC at 6 months: {final_auc[0]:.3f}")
     print(f"Final AUC at 12 months: {final_auc[1]:.3f}")
     print(f"Final Mean AUC: {final_mean_auc:.3f}")
+
     # Save the model
     torch.save(trained_model.state_dict(), config["model"]["save_path"])
+
+    # Save the configuration
+    save_config(config, os.path.dirname(config["model"]["save_path"]))

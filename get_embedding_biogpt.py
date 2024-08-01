@@ -1,6 +1,6 @@
 import torch
 import pandas as pd
-from transformers import AutoTokenizer, AutoModel
+from transformers import BioGptTokenizer, BioGptForCausalLM
 import h5py
 import argparse
 from tqdm import tqdm
@@ -28,15 +28,23 @@ def sliding_window_embedding(documents, model, tokenizer, device, max_length, st
         window_embeddings = []
         for i in range(0, len(windows), 8):  # Process 8 windows at a time
             batch = windows[i : i + 8]
-            padded_batch = [w + [0] * (max_length - len(w)) for w in batch]
+            padded_batch = [
+                w + [tokenizer.pad_token_id] * (max_length - len(w)) for w in batch
+            ]
             inputs = torch.tensor(padded_batch).to(device)
-            attention_mask = (inputs != 0).long()
+            attention_mask = (inputs != tokenizer.pad_token_id).long()
+
             with torch.no_grad():
-                outputs = model(inputs, attention_mask=attention_mask)
-                embeddings = outputs.last_hidden_state.mean(dim=1)
+                outputs = model(
+                    inputs, attention_mask=attention_mask, output_hidden_states=True
+                )
+                # Use the last hidden state as the embedding
+                embeddings = outputs.hidden_states[-1].mean(dim=1)
                 window_embeddings.extend(embeddings)
+
         document_embedding = torch.mean(torch.stack(window_embeddings), dim=0)
         all_embeddings.append(document_embedding)
+
     return torch.stack(all_embeddings)
 
 
@@ -116,7 +124,6 @@ def process_patient_documents(
             batch_embeddings = sliding_window_embedding(
                 batch_documents, model, tokenizer, device, max_length, stride
             )
-
             # Reshape embeddings to group by patient
             batch_embeddings = batch_embeddings.view(
                 -1, max_documents, batch_embeddings.size(-1)
@@ -146,19 +153,25 @@ def process_patient_documents(
 
 def generate_embeddings_gpu(patient_data, gpu_id):
     logger.info(f"Initializing embedding generation on GPU {gpu_id}")
-    tokenizer = AutoTokenizer.from_pretrained("BioMistral/BioMistral-7B")
-    model = AutoModel.from_pretrained("BioMistral/BioMistral-7B")
+    tokenizer = BioGptTokenizer.from_pretrained("microsoft/biogpt")
+    model = BioGptForCausalLM.from_pretrained("microsoft/biogpt")
     device = torch.device(f"cuda:{gpu_id}" if gpu_id >= 0 else "cpu")
     model = model.to(device)
     logger.info(f"Model loaded on {'GPU ' + str(gpu_id) if gpu_id >= 0 else 'CPU'}")
 
+    # Obtain the model's maximum context length
+    max_length = model.config.max_position_embeddings
+    stride = max_length // 2
+    logger.info(f"Model max context length: {max_length}, Using stride: {stride}")
     (
         patient_embeddings,
         patient_ids,
         patient_time_to_discharge,
         survival_times,
         death_indicators,
-    ) = process_patient_documents(patient_data, model, tokenizer, device)
+    ) = process_patient_documents(
+        patient_data, model, tokenizer, device, max_length=max_length, stride=stride
+    )
 
     logger.info(
         f"Embedding generation completed on {'GPU ' + str(gpu_id) if gpu_id >= 0 else 'CPU'}"

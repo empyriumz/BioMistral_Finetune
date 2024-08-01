@@ -1,35 +1,17 @@
 import torch
 import numpy as np
 import math
+import os
+import yaml
 
 
-def add_censoring_variability(
-    survival_times, event_indicators, max_time=365, variability=30
-):
-    """
-    Add variability to censoring times for patients who haven't experienced the event.
+def save_config(config, save_dir):
+    os.makedirs(save_dir, exist_ok=True)
+    config_path = os.path.join(save_dir, "config.yaml")
+    with open(config_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False)
 
-    :param survival_times: Array of survival times
-    :param event_indicators: Array of event indicators (1 for event, 0 for censored)
-    :param max_time: Maximum survival time (in days)
-    :param variability: Range of variability to add (in days)
-    :return: Updated survival times and event indicators
-    """
-    for i in range(len(survival_times)):
-        if event_indicators[i] == 0:  # Censored patient
-            if survival_times[i] >= max_time:
-                # Add random variability to censoring time
-                survival_times[i] = max_time + np.random.uniform(0, variability)
-            else:
-                # For patients censored before max_time, keep their original censoring time
-                pass
-        else:  # Patient experienced the event
-            if survival_times[i] > max_time:
-                # If event time is beyond max_time, censor at max_time + variability
-                survival_times[i] = max_time + np.random.uniform(0, variability)
-                event_indicators[i] = 0  # Change to censored
-
-    return survival_times, event_indicators
+    print(f"Configuration saved to {config_path}")
 
 
 def bitonic_network(n):
