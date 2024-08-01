@@ -1,16 +1,17 @@
 data:
   demographics_path: "data/patient_demographics.pkl.gz"
-  discharge_notes_path: "data/patient_discharge_notes.pkl.gz"
+  embeddings_path: "data/tiny_sample_patient_embedding.h5"
+  censoring_variability: 30  # Range of variability to add in days to the censoring time
 
 model:
   embedding_dim: 4096
-  sorter_size: 32
+  num_documents: 5
   save_path: "trained_model.pth"
 
 training:
-  batch_size: 128
-  num_epochs: 10
-  learning_rate: 0.001
+  batch_size: 4
+  num_epochs: 40
+  learning_rate: 0.0001
   use_gpu: true
   gpu_id: 0
 

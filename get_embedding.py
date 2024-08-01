@@ -17,85 +17,186 @@ logger = logging.getLogger(__name__)
 
 
 def sliding_window_embedding(
-    document, model, tokenizer, device, max_length=2048, stride=1024
+    documents, model, tokenizer, device, max_length=2048, stride=1024
 ):
-    tokens = tokenizer.encode(document, add_special_tokens=False)
-    windows = [tokens[i : i + max_length] for i in range(0, len(tokens), stride)]
-    window_embeddings = []
-    for window in windows:
-        inputs = torch.tensor([window]).to(device)
-        with torch.no_grad():
-            outputs = model(inputs)
-            embedding = outputs.last_hidden_state.mean(dim=1)
-            window_embeddings.append(embedding)
-    document_embedding = torch.mean(torch.cat(window_embeddings), dim=0)
-    return document_embedding.cpu()
+    all_embeddings = []
+    for document in documents:
+        if not document:  # Handle empty notes
+            all_embeddings.append(torch.zeros(model.config.hidden_size, device=device))
+            continue
+
+        tokens = tokenizer.encode(document, add_special_tokens=False)
+        windows = [tokens[i : i + max_length] for i in range(0, len(tokens), stride)]
+        window_embeddings = []
+        for i in range(0, len(windows), 8):  # Process 8 windows at a time
+            batch = windows[i : i + 8]
+            padded_batch = [w + [0] * (max_length - len(w)) for w in batch]
+            inputs = torch.tensor(padded_batch).to(device)
+            attention_mask = (inputs != 0).long()
+            with torch.no_grad():
+                outputs = model(inputs, attention_mask=attention_mask)
+                embeddings = outputs.last_hidden_state.mean(dim=1)
+                window_embeddings.extend(embeddings)
+        document_embedding = torch.mean(torch.stack(window_embeddings), dim=0)
+        all_embeddings.append(document_embedding)
+    return torch.stack(all_embeddings)
 
 
-def process_patient_documents(patient_data, model, tokenizer, device, batch_size=64):
+def pad_or_truncate(data, target_length, pad_value=0):
+    data = list(data)  # Convert input to a list
+    if len(data) > target_length:
+        return data[:target_length]
+    elif len(data) < target_length:
+        padding = [pad_value] * (target_length - len(data))
+        return data + padding
+    return data
+
+
+def process_patient_documents(
+    patient_data, model, tokenizer, device, batch_size=32, max_documents=5
+):
     logger.info(f"Processing {len(patient_data)} patients on device {device}")
     all_patient_embeddings = []
     all_patient_ids = []
-    all_patient_timestamps = []
+    all_patient_time_to_discharge = []
+    all_patient_survival_times = []
+    all_patient_death_indicators = []
+
     for i in tqdm(range(0, len(patient_data), batch_size), position=1, leave=False):
         batch = patient_data.iloc[i : i + batch_size]
-        batch_embeddings = []
-        batch_timestamps = []
+        batch_documents = []
+        batch_time_to_discharge = []
+        batch_ids = []
+        batch_doc_indices = []
+
         for _, row in batch.iterrows():
             notes_list = row["notes"]
             subject_id = row["subject_id"]
-            patient_embeddings = []
-            patient_timestamps = []
-            for note_idx, (note, timestamp) in enumerate(notes_list):
-                if note:
-                    logger.debug(
-                        f"Processing note {note_idx + 1} for patient {subject_id}"
+            patient_documents = []
+            patient_time_to_discharge = []
+            patient_doc_indices = []
+
+            for doc_idx, (note, time_to_discharge) in enumerate(notes_list):
+                if note:  # Only process non-empty notes
+                    patient_documents.append(note)
+                    patient_time_to_discharge.append(
+                        time_to_discharge if pd.notna(time_to_discharge) else -1
                     )
-                    doc_embedding = sliding_window_embedding(
-                        note, model, tokenizer, device
-                    )
-                    patient_embeddings.append(doc_embedding)
-                    patient_timestamps.append(
-                        timestamp.timestamp() if pd.notna(timestamp) else -1
-                    )
-                else:
-                    logger.debug(f"Empty note {note_idx + 1} for patient {subject_id}")
-                    patient_embeddings.append(torch.zeros(model.config.hidden_size))
-                    patient_timestamps.append(-1)
-            batch_embeddings.append(torch.stack(patient_embeddings))
-            batch_timestamps.append(patient_timestamps)
-            all_patient_ids.append(subject_id)
-        all_patient_embeddings.extend(batch_embeddings)
-        all_patient_timestamps.extend(batch_timestamps)
+                    patient_doc_indices.append(doc_idx)
+
+            # Sort documents, time_to_discharge, and indices based on doc_idx
+            sorted_data = sorted(
+                zip(patient_doc_indices, patient_documents, patient_time_to_discharge)
+            )
+            patient_doc_indices, patient_documents, patient_time_to_discharge = map(
+                list, zip(*sorted_data)
+            )
+
+            # Pad or truncate documents, time_to_discharge, and indices
+            patient_documents = pad_or_truncate(patient_documents, max_documents, "")
+            patient_time_to_discharge = pad_or_truncate(
+                patient_time_to_discharge, max_documents, -1
+            )
+            patient_doc_indices = pad_or_truncate(
+                patient_doc_indices, max_documents, -1
+            )
+
+            batch_documents.extend(patient_documents)
+            batch_time_to_discharge.extend(patient_time_to_discharge)
+            batch_ids.extend([subject_id] * max_documents)
+            batch_doc_indices.extend(patient_doc_indices)
+
+        if batch_documents:
+            # Process the batch of documents
+            batch_embeddings = sliding_window_embedding(
+                batch_documents, model, tokenizer, device
+            )
+
+            # Reshape embeddings to group by patient
+            batch_embeddings = batch_embeddings.view(
+                -1, max_documents, batch_embeddings.size(-1)
+            )
+
+            all_patient_embeddings.extend(batch_embeddings.cpu().numpy())
+            all_patient_time_to_discharge.extend(
+                np.array(batch_time_to_discharge).reshape(-1, max_documents)
+            )
+            all_patient_ids.extend(batch_ids[::max_documents])
+            all_patient_survival_times.extend(
+                [row["survival_time"] for _, row in batch.iterrows()]
+            )
+            all_patient_death_indicators.extend(
+                [row["ind_death"] for _, row in batch.iterrows()]
+            )
+
     logger.info(f"Processed {len(all_patient_ids)} patients")
-    return all_patient_embeddings, all_patient_ids, all_patient_timestamps
+    return (
+        all_patient_embeddings,
+        all_patient_ids,
+        all_patient_time_to_discharge,
+        all_patient_survival_times,
+        all_patient_death_indicators,
+    )
 
 
 def generate_embeddings_gpu(patient_data, gpu_id):
     logger.info(f"Initializing embedding generation on GPU {gpu_id}")
     tokenizer = AutoTokenizer.from_pretrained("BioMistral/BioMistral-7B")
     model = AutoModel.from_pretrained("BioMistral/BioMistral-7B")
-    device = torch.device(f"cuda:{gpu_id}")
+    device = torch.device(f"cuda:{gpu_id}" if gpu_id >= 0 else "cpu")
     model = model.to(device)
-    logger.info(f"Model loaded on GPU {gpu_id}")
+    logger.info(f"Model loaded on {'GPU ' + str(gpu_id) if gpu_id >= 0 else 'CPU'}")
 
-    patient_embeddings, patient_ids, patient_timestamps = process_patient_documents(
-        patient_data, model, tokenizer, device
+    (
+        patient_embeddings,
+        patient_ids,
+        patient_time_to_discharge,
+        survival_times,
+        death_indicators,
+    ) = process_patient_documents(patient_data, model, tokenizer, device)
+
+    logger.info(
+        f"Embedding generation completed on {'GPU ' + str(gpu_id) if gpu_id >= 0 else 'CPU'}"
+    )
+    return (
+        patient_embeddings,
+        patient_ids,
+        patient_time_to_discharge,
+        survival_times,
+        death_indicators,
     )
 
-    logger.info(f"Embedding generation completed on GPU {gpu_id}")
-    return patient_embeddings, patient_ids, patient_timestamps
 
-
-def save_embeddings(output_path, patient_embeddings, patient_ids, patient_timestamps):
+def save_embeddings(
+    output_path,
+    patient_embeddings,
+    patient_ids,
+    patient_time_to_discharge,
+    survival_times,
+    death_indicators,
+):
     logger.info(f"Saving embeddings to {output_path}")
     with h5py.File(output_path, "w") as hf:
-        for i, (embedding, subject_id, timestamps) in enumerate(
-            zip(patient_embeddings, patient_ids, patient_timestamps)
+        for i, (
+            embedding,
+            subject_id,
+            time_to_discharge,
+            survival_time,
+            death_indicator,
+        ) in enumerate(
+            zip(
+                patient_embeddings,
+                patient_ids,
+                patient_time_to_discharge,
+                survival_times,
+                death_indicators,
+            )
         ):
-            hf.create_dataset(f"patient_{i}/embedding", data=embedding.numpy())
+            hf.create_dataset(f"patient_{i}/embedding", data=embedding)
             hf.create_dataset(f"patient_{i}/subject_id", data=subject_id)
-            hf.create_dataset(f"patient_{i}/timestamp", data=timestamps)
+            hf.create_dataset(f"patient_{i}/time_to_discharge", data=time_to_discharge)
+            hf.create_dataset(f"patient_{i}/survival_time", data=survival_time)
+            hf.create_dataset(f"patient_{i}/death_indicator", data=death_indicator)
         hf.create_dataset("patient_ids", data=patient_ids)
     logger.info(f"Embeddings saved for {len(patient_ids)} patients")
 
@@ -117,16 +218,35 @@ def generate_and_save_embeddings(patient_data, output_path, use_gpu):
 
         all_embeddings = []
         all_ids = []
-        all_timestamps = []
-        for emb, ids, timestamps in results:
+        all_time_to_discharge = []
+        all_survival_times = []
+        all_death_indicators = []
+        for emb, ids, times, survival_times, death_indicators in results:
             all_embeddings.extend(emb)
             all_ids.extend(ids)
-            all_timestamps.extend(timestamps)
-
-        save_embeddings(output_path, all_embeddings, all_ids, all_timestamps)
+            all_time_to_discharge.extend(times)
+            all_survival_times.extend(survival_times)
+            all_death_indicators.extend(death_indicators)
     else:
         logger.info("Using single GPU or CPU for processing")
-        generate_embeddings_gpu(patient_data, 0 if use_gpu else -1)
+        (
+            all_embeddings,
+            all_ids,
+            all_time_to_discharge,
+            all_survival_times,
+            all_death_indicators,
+        ) = generate_embeddings_gpu(
+            patient_data, 0 if use_gpu and torch.cuda.is_available() else -1
+        )
+
+    save_embeddings(
+        output_path,
+        all_embeddings,
+        all_ids,
+        all_time_to_discharge,
+        all_survival_times,
+        all_death_indicators,
+    )
 
     end_time = datetime.now()
     logger.info(f"Embedding generation completed at {end_time}")

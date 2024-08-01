@@ -132,57 +132,74 @@ class AttentionAggregator(nn.Module):
         self.embedding_dim = embedding_dim
         self.num_documents = num_documents
         self.attention = nn.Linear(embedding_dim, 1)
-        self.time_decay = nn.Parameter(torch.tensor(0.1))
+        # self.time_weight = nn.Linear(1, 1, bias=False)
 
-    def forward(self, embeddings, timestamps):
+    def forward(self, embeddings, time_diffs):
         """
         Aggregate document embeddings using attention and time-based weighting.
 
         Args:
             embeddings (torch.Tensor): Document embeddings of shape (batch_size, num_documents, embedding_dim)
-            timestamps (torch.Tensor): Timestamps for each document of shape (batch_size, num_documents)
+            time_diffs (torch.Tensor): Time differences for each document of shape (batch_size, num_documents)
 
         Returns:
             torch.Tensor: Aggregated embedding of shape (batch_size, embedding_dim)
         """
-        # Input shape assertions
-        assert (
-            embeddings.shape[1] == self.num_documents
-        ), f"Expected {self.num_documents} documents, but got {embeddings.shape[1]}"
-        assert (
-            embeddings.shape[2] == self.embedding_dim
-        ), f"Expected embedding dimension of {self.embedding_dim}, but got {embeddings.shape[2]}"
-        assert (
-            timestamps.shape[1] == self.num_documents
-        ), f"Expected {self.num_documents} timestamps, but got {timestamps.shape[1]}"
-
         attention_weights = self.attention(embeddings)  # (batch_size, num_documents, 1)
         attention_weights = F.softmax(attention_weights, dim=1)
 
         # Calculate time weights
-        # Note: We use the first (most recent) timestamp as the reference
-        latest_time = timestamps[:, 0].unsqueeze(1)
-        time_diff = latest_time - timestamps
-        time_weights = torch.exp(-self.time_decay * time_diff).unsqueeze(-1)
+        # time_weights = self.time_weight(
+        #     time_diffs.unsqueeze(-1)
+        # )  # (batch_size, num_documents, 1)
+        # time_weights = torch.sigmoid(time_weights)  # Normalize to [0, 1]
 
         # Combine attention and time weights
-        combined_weights = attention_weights * time_weights
-        combined_weights = combined_weights / combined_weights.sum(dim=1, keepdim=True)
+        # combined_weights = attention_weights * time_weights
 
         # Apply weights to embeddings
-        aggregated_embedding = torch.sum(embeddings * combined_weights, dim=1)
+        # aggregated_embedding = torch.sum(embeddings * combined_weights, dim=1)
+        aggregated_embedding = torch.sum(embeddings * attention_weights, dim=1)
         return aggregated_embedding
+
+
+class BinaryClassificationModel(nn.Module):
+    def __init__(self, embedding_dim, num_structured_features, num_documents=5):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.num_documents = num_documents
+        self.attention_aggregator = AttentionAggregator(embedding_dim, num_documents)
+        self.fc1 = nn.Linear(embedding_dim + num_structured_features, 256)
+        self.fc2 = nn.Linear(256, 64)
+        self.fc3 = nn.Linear(64, 1)
+        self.dropout = nn.Dropout(0.3)
+
+    def forward(self, document_embeddings, time_diffs, structured_data):
+        document_embeddings = F.normalize(document_embeddings, p=2, dim=2)
+        aggregated_embedding = self.attention_aggregator(
+            document_embeddings, time_diffs
+        )
+        combined_features = torch.cat([aggregated_embedding, structured_data], dim=1)
+        x = F.relu(self.fc1(combined_features))
+        x = self.dropout(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout(x)
+        risk_score = torch.sigmoid(self.fc3(x))
+        return risk_score.squeeze()
+
+    def get_risk_prediction(self, risk_score):
+        return risk_score
 
 
 class SurvivalModel(nn.Module):
     def __init__(
-        self, embedding_dim, structured_features, sorter_size=32, num_documents=5
+        self, embedding_dim, num_structured_features, sorter_size=32, num_documents=5
     ):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.num_documents = num_documents
         self.attention_aggregator = AttentionAggregator(embedding_dim, num_documents)
-        self.fc = nn.Linear(embedding_dim + structured_features, sorter_size)
+        self.fc = nn.Linear(embedding_dim + num_structured_features, sorter_size)
         self.sorter = CustomDiffSortNet(
             sorting_network_type="bitonic",
             size=sorter_size,
@@ -190,36 +207,24 @@ class SurvivalModel(nn.Module):
             distribution="cauchy",
         )
 
-    def forward(self, document_embeddings, timestamps, structured_data):
-        """
-        Forward pass of the survival model.
+    def forward(self, document_embeddings, time_diffs, structured_data):
+        risk_scores = self.get_risk_scores(
+            document_embeddings, time_diffs, structured_data
+        )
+        _, perm_prediction = self.sorter(risk_scores)
+        return risk_scores, perm_prediction
 
-        Args:
-            document_embeddings (torch.Tensor): Document embeddings of shape (batch_size, num_documents, embedding_dim)
-            timestamps (torch.Tensor): Timestamps for each document of shape (batch_size, num_documents)
-            structured_data (torch.Tensor): Structured patient data of shape (batch_size, structured_features)
-
-        Returns:
-            tuple: (logits, perm_prediction)
-        """
-        assert (
-            document_embeddings.shape[1] == self.num_documents
-        ), f"Expected {self.num_documents} documents, but got {document_embeddings.shape[1]}"
-        assert (
-            document_embeddings.shape[2] == self.embedding_dim
-        ), f"Expected embedding dimension of {self.embedding_dim}, but got {document_embeddings.shape[2]}"
+    def get_risk_scores(self, document_embeddings, time_diffs, structured_data):
+        document_embeddings = F.normalize(document_embeddings, p=2, dim=2)
+        # time_diffs = torch.where(
+        #     torch.isnan(time_diffs),
+        #     torch.tensor(-1e8).to(time_diffs.device),
+        #     time_diffs,
+        # )
 
         aggregated_embedding = self.attention_aggregator(
-            document_embeddings, timestamps
+            document_embeddings, time_diffs
         )
         combined_features = torch.cat([aggregated_embedding, structured_data], dim=1)
-        logits = self.fc(combined_features)
-        _, perm_prediction = self.sorter(logits)
-        return logits, perm_prediction
-
-    def get_risk_scores(self, document_embeddings, timestamps, structured_data):
-        aggregated_embedding = self.attention_aggregator(
-            document_embeddings, timestamps
-        )
-        combined_features = torch.cat([aggregated_embedding, structured_data], dim=1)
-        return self.fc(combined_features).squeeze(-1)
+        raw_risk_score = self.fc(combined_features)
+        return raw_risk_score

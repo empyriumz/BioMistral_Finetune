@@ -1,4 +1,5 @@
 import torch
+import logging
 
 
 def _get_possible_permutation_matrix(
@@ -94,8 +95,29 @@ def diffsurv_loss(perm_prediction, survival_times, event_indicators):
 
     possible_predictions = (perm_ground_truth * perm_prediction).sum(dim=1)
 
+    # More aggressive clamping
+    possible_predictions = torch.clamp(possible_predictions, 1e-7, 1 - 1e-7)
+
+    # Safety check
+    if torch.any(possible_predictions < 0) or torch.any(possible_predictions > 1):
+        logging.warning("Values outside [0, 1] range detected in possible_predictions")
+        possible_predictions = torch.where(
+            possible_predictions < 0,
+            torch.zeros_like(possible_predictions),
+            torch.where(
+                possible_predictions > 1,
+                torch.ones_like(possible_predictions),
+                possible_predictions,
+            ),
+        )
+
+    # Log statistics for debugging
+    logging.info(
+        f"possible_predictions min: {possible_predictions.min().item()}, max: {possible_predictions.max().item()}"
+    )
+
     loss = torch.nn.BCELoss()(
-        torch.clamp(possible_predictions, 1e-8, 1 - 1e-8),
+        possible_predictions,
         torch.ones_like(possible_predictions),
     )
 
