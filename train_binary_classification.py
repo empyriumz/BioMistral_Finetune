@@ -6,7 +6,12 @@ import numpy as np
 from torch.utils.data import DataLoader
 from sksurv.metrics import concordance_index_ipcw, cumulative_dynamic_auc
 from model import BinaryClassificationModel
-from data_processing import load_data, prepare_data, custom_collate
+from data_processing import (
+    load_data,
+    prepare_data,
+    custom_collate,
+    get_max_survival_time,
+)
 from utils import save_config
 
 
@@ -22,6 +27,7 @@ def train_binary_model(
     patience,
     save_dir,
     config,
+    max_time=365,
 ):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = torch.nn.BCELoss()
@@ -30,26 +36,17 @@ def train_binary_model(
     epochs_without_improvement = 0
     best_model_state = None
 
-    # Ensure save_dir exists
     os.makedirs(save_dir, exist_ok=True)
     model_save_path = os.path.join(save_dir, "best_model.pth")
 
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0
-        for (
-            document_embeddings,
-            timestamps,
-            structured_data,
-            _,
-            event_indicators,
-        ) in train_loader:
+        for document_embeddings, _, event_indicators in train_loader:
             document_embeddings = document_embeddings.to(device)
-            timestamps = timestamps.to(device)
-            structured_data = structured_data.to(device)
             event_indicators = event_indicators.to(device)
 
-            risk_scores = model(document_embeddings, timestamps, structured_data)
+            risk_scores = model(document_embeddings)
             loss = criterion(risk_scores, event_indicators)
 
             optimizer.zero_grad()
@@ -59,7 +56,7 @@ def train_binary_model(
 
         model.eval()
         val_c_index, val_auc, val_mean_auc = evaluate_binary_model(
-            model, val_loader, y_train, y_val, device
+            model, val_loader, y_train, y_val, device, max_time
         )
 
         print(
@@ -72,7 +69,6 @@ def train_binary_model(
             epochs_without_improvement = 0
             best_model_state = model.state_dict()
 
-            # Save the best model and configuration
             torch.save(best_model_state, model_save_path)
             save_config(config, save_dir)
             print(f"New best model saved with C-index: {best_val_c_index:.3f}\n")
@@ -86,30 +82,25 @@ def train_binary_model(
     if epoch == num_epochs - 1:
         print("Training completed without early stopping")
 
-    # Load the best model before returning
     model.load_state_dict(best_model_state)
     return model, best_val_c_index
 
 
-def evaluate_binary_model(model, data_loader, y_train, y_val, device):
+def evaluate_binary_model(model, data_loader, y_train, y_val, device, max_time=365):
     model.eval()
     all_risk_predictions = []
 
     with torch.no_grad():
-        for document_embeddings, timestamps, structured_data, _, _ in data_loader:
+        for document_embeddings, _, _ in data_loader:
             document_embeddings = document_embeddings.to(device)
-            timestamps = timestamps.to(device)
-            structured_data = structured_data.to(device)
-
-            risk_scores = model(document_embeddings, timestamps, structured_data)
+            risk_scores = model(document_embeddings)
             all_risk_predictions.extend(risk_scores.cpu().numpy())
 
     all_risk_predictions = np.array(all_risk_predictions)
 
     c_index = concordance_index_ipcw(y_train, y_val, all_risk_predictions)[0]
-
-    # Calculate cumulative_dynamic_auc for 6 and 12 months
-    times = np.array([180, 365])
+    times = np.array([max_time * 0.25, max_time * 0.5, max_time * 0.75])
+    # times = np.array([180, 365])
     auc, mean_auc = cumulative_dynamic_auc(y_train, y_val, all_risk_predictions, times)
 
     return c_index, auc, mean_auc
@@ -120,12 +111,9 @@ def main(config_path):
         config = yaml.safe_load(file)
 
     embeddings_path = config["data"]["embeddings_path"]
-    demographics_path = config["data"]["demographics_path"]
 
-    data_dict = load_data(embeddings_path, demographics_path)
-    train_dataset, val_dataset, y_train, y_val, num_structured_features = prepare_data(
-        data_dict, config
-    )
+    data_dict = load_data(embeddings_path)
+    train_dataset, val_dataset, y_train, y_val = prepare_data(data_dict, config)
 
     train_loader = DataLoader(
         train_dataset,
@@ -144,7 +132,6 @@ def main(config_path):
 
     binary_model = BinaryClassificationModel(
         embedding_dim=embedding_dim,
-        num_structured_features=num_structured_features,
         num_documents=config["model"]["num_documents"],
     )
 
@@ -155,8 +142,8 @@ def main(config_path):
 
     output_dir = config["training"]["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
-
     binary_model = binary_model.to(device)
+    max_time = get_max_survival_time(data_dict)
     best_model, best_val_c_index = train_binary_model(
         binary_model,
         train_loader,
@@ -169,6 +156,7 @@ def main(config_path):
         patience=config["training"]["early_stopping_patience"],
         save_dir=output_dir,
         config=config,
+        max_time=max_time,
     )
 
     final_c_index, final_auc, final_mean_auc = evaluate_binary_model(
