@@ -3,7 +3,6 @@ import pandas as pd
 from transformers import (
     AutoTokenizer,
     AutoModel,
-    AutoConfig,
     BioGptTokenizer,
     BioGptForCausalLM,
 )
@@ -161,6 +160,40 @@ def process_patient_documents(
     )
 
 
+def save_embeddings(
+    output_path,
+    patient_embeddings,
+    patient_ids,
+    patient_time_to_discharge,
+    survival_times,
+    death_indicators,
+):
+    logger.info(f"Saving embeddings to {output_path}")
+    with h5py.File(output_path, "w") as hf:
+        for i, (
+            embedding,
+            subject_id,
+            time_to_discharge,
+            survival_time,
+            death_indicator,
+        ) in enumerate(
+            zip(
+                patient_embeddings,
+                patient_ids,
+                patient_time_to_discharge,
+                survival_times,
+                death_indicators,
+            )
+        ):
+            hf.create_dataset(f"patient_{i}/embedding", data=embedding)
+            hf.create_dataset(f"patient_{i}/subject_id", data=subject_id)
+            hf.create_dataset(f"patient_{i}/time_to_discharge", data=time_to_discharge)
+            hf.create_dataset(f"patient_{i}/survival_time", data=survival_time)
+            hf.create_dataset(f"patient_{i}/death_indicator", data=death_indicator)
+        hf.create_dataset("patient_ids", data=patient_ids)
+    logger.info(f"Embeddings saved for {len(patient_ids)} patients")
+
+
 def generate_embeddings_gpu(patient_data, gpu_id, model_name):
     logger.info(f"Initializing embedding generation on GPU {gpu_id}")
 
@@ -179,6 +212,9 @@ def generate_embeddings_gpu(patient_data, gpu_id, model_name):
     elif model_name == "gatortron-large":
         tokenizer = AutoTokenizer.from_pretrained("UFNLP/gatortron-large")
         model = AutoModel.from_pretrained("UFNLP/gatortron-large")
+    elif model_name == "biomistral":
+        tokenizer = AutoTokenizer.from_pretrained("BioMistral/BioMistral-7B")
+        model = AutoModel.from_pretrained("BioMistral/BioMistral-7B")
     else:
         raise ValueError(f"Unsupported model: {model_name}")
 
@@ -215,38 +251,56 @@ def generate_embeddings_gpu(patient_data, gpu_id, model_name):
     )
 
 
-def save_embeddings(
-    output_path,
-    patient_embeddings,
-    patient_ids,
-    patient_time_to_discharge,
-    survival_times,
-    death_indicators,
-):
-    logger.info(f"Saving embeddings to {output_path}")
-    with h5py.File(output_path, "w") as hf:
-        for i, (
-            embedding,
-            subject_id,
-            time_to_discharge,
-            survival_time,
-            death_indicator,
-        ) in enumerate(
-            zip(
-                patient_embeddings,
-                patient_ids,
-                patient_time_to_discharge,
-                survival_times,
-                death_indicators,
+def generate_and_save_embeddings(patient_data, output_path, use_gpu, model_name):
+    start_time = datetime.now()
+    logger.info(f"Starting embedding generation at {start_time}")
+
+    if use_gpu and torch.cuda.device_count() > 1:
+        num_gpus = min(2, torch.cuda.device_count())  # Use up to 2 GPUs
+        logger.info(f"Using {num_gpus} GPUs for parallel processing")
+        split_data = np.array_split(patient_data, num_gpus)
+
+        with mp.Pool(num_gpus) as pool:
+            results = pool.starmap(
+                generate_embeddings_gpu,
+                [(split, i, model_name) for i, split in enumerate(split_data)],
             )
-        ):
-            hf.create_dataset(f"patient_{i}/embedding", data=embedding)
-            hf.create_dataset(f"patient_{i}/subject_id", data=subject_id)
-            hf.create_dataset(f"patient_{i}/time_to_discharge", data=time_to_discharge)
-            hf.create_dataset(f"patient_{i}/survival_time", data=survival_time)
-            hf.create_dataset(f"patient_{i}/death_indicator", data=death_indicator)
-        hf.create_dataset("patient_ids", data=patient_ids)
-    logger.info(f"Embeddings saved for {len(patient_ids)} patients")
+
+        all_embeddings = []
+        all_ids = []
+        all_time_to_discharge = []
+        all_survival_times = []
+        all_death_indicators = []
+        for emb, ids, times, survival_times, death_indicators in results:
+            all_embeddings.extend(emb)
+            all_ids.extend(ids)
+            all_time_to_discharge.extend(times)
+            all_survival_times.extend(survival_times)
+            all_death_indicators.extend(death_indicators)
+    else:
+        logger.info("Using single GPU or CPU for processing")
+        (
+            all_embeddings,
+            all_ids,
+            all_time_to_discharge,
+            all_survival_times,
+            all_death_indicators,
+        ) = generate_embeddings_gpu(
+            patient_data, 0 if use_gpu and torch.cuda.is_available() else -1, model_name
+        )
+
+    save_embeddings(
+        output_path,
+        all_embeddings,
+        all_ids,
+        all_time_to_discharge,
+        all_survival_times,
+        all_death_indicators,
+    )
+
+    end_time = datetime.now()
+    logger.info(f"Embedding generation completed at {end_time}")
+    logger.info(f"Total time taken: {end_time - start_time}")
 
 
 def generate_and_save_embeddings(patient_data, output_path, use_gpu, model_name):
@@ -324,6 +378,7 @@ if __name__ == "__main__":
             "gatortron-base",
             "gatortron-medium",
             "gatortron-large",
+            "biomistral",
         ],
         default="biogpt",
         help="Choose the model to use for embedding generation",
