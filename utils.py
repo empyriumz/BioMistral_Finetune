@@ -11,8 +11,6 @@ def save_config(config, save_dir):
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False)
 
-    print(f"Configuration saved to {config_path}")
-
 
 def bitonic_network(n):
     IDENTITY_MAP_FACTOR = 0.5

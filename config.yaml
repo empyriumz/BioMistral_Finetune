@@ -5,17 +5,19 @@ data:
 
 model:
   embedding_dim: 4096
+  type: "embedding_structured"  # Options: "embedding_only" or "embedding_structured"
   num_documents: 5
+  attention: true
+  time_weighting: false
   save_path: "trained_model.pth"
 
 training:
+  random_seed: 1
   batch_size: 128
   num_epochs: 80
+  val_split: 0.25
   early_stopping_patience: 8
   learning_rate: 0.0001
   use_gpu: true
   gpu_id: 0
   output_dir: "output"
-
-evaluation:
-  metric: "c_index"
