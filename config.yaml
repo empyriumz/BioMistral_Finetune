@@ -1,10 +1,10 @@
 data:
+  embeddings_path: "data/sampled_patient_embedding_gatortron_base.h5"
   demographics_path: "data/patient_demographics.pkl.gz"
-  embeddings_path: "data/sampled_patient_embedding.h5"
   censoring_variability: 30  # Range of variability to add in days to the censoring time
 
 model:
-  embedding_dim: 4096
+  embedding_dim: 1024
   type: "embedding_structured"  # Options: "embedding_only" or "embedding_structured"
   num_documents: 5
   attention: true

@@ -1,6 +1,12 @@
 import torch
 import pandas as pd
-from transformers import BioGptTokenizer, BioGptForCausalLM
+from transformers import (
+    AutoTokenizer,
+    AutoModel,
+    AutoConfig,
+    BioGptTokenizer,
+    BioGptForCausalLM,
+)
 import h5py
 import argparse
 from tqdm import tqdm
@@ -35,11 +41,14 @@ def sliding_window_embedding(documents, model, tokenizer, device, max_length, st
             attention_mask = (inputs != tokenizer.pad_token_id).long()
 
             with torch.no_grad():
-                outputs = model(
-                    inputs, attention_mask=attention_mask, output_hidden_states=True
-                )
-                # Use the last hidden state as the embedding
-                embeddings = outputs.hidden_states[-1].mean(dim=1)
+                if isinstance(model, BioGptForCausalLM):
+                    outputs = model(
+                        inputs, attention_mask=attention_mask, output_hidden_states=True
+                    )
+                    embeddings = outputs.hidden_states[-1].mean(dim=1)
+                else:
+                    outputs = model(inputs, attention_mask=attention_mask)
+                    embeddings = outputs.last_hidden_state.mean(dim=1)
                 window_embeddings.extend(embeddings)
 
         document_embedding = torch.mean(torch.stack(window_embeddings), dim=0)
@@ -124,6 +133,7 @@ def process_patient_documents(
             batch_embeddings = sliding_window_embedding(
                 batch_documents, model, tokenizer, device, max_length, stride
             )
+
             # Reshape embeddings to group by patient
             batch_embeddings = batch_embeddings.view(
                 -1, max_documents, batch_embeddings.size(-1)
@@ -151,18 +161,38 @@ def process_patient_documents(
     )
 
 
-def generate_embeddings_gpu(patient_data, gpu_id):
+def generate_embeddings_gpu(patient_data, gpu_id, model_name):
     logger.info(f"Initializing embedding generation on GPU {gpu_id}")
-    tokenizer = BioGptTokenizer.from_pretrained("microsoft/biogpt")
-    model = BioGptForCausalLM.from_pretrained("microsoft/biogpt")
+
+    if model_name == "biogpt":
+        tokenizer = BioGptTokenizer.from_pretrained("microsoft/biogpt")
+        model = BioGptForCausalLM.from_pretrained("microsoft/biogpt")
+    elif model_name == "biogpt-large":
+        tokenizer = BioGptTokenizer.from_pretrained("microsoft/BioGPT-large")
+        model = BioGptForCausalLM.from_pretrained("microsoft/BioGPT-large")
+    elif model_name == "gatortron-base":
+        tokenizer = AutoTokenizer.from_pretrained("UFNLP/gatortron-base")
+        model = AutoModel.from_pretrained("UFNLP/gatortron-base")
+    elif model_name == "gatortron-medium":
+        tokenizer = AutoTokenizer.from_pretrained("UFNLP/gatortron-medium")
+        model = AutoModel.from_pretrained("UFNLP/gatortron-medium")
+    elif model_name == "gatortron-large":
+        tokenizer = AutoTokenizer.from_pretrained("UFNLP/gatortron-large")
+        model = AutoModel.from_pretrained("UFNLP/gatortron-large")
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
     device = torch.device(f"cuda:{gpu_id}" if gpu_id >= 0 else "cpu")
     model = model.to(device)
-    logger.info(f"Model loaded on {'GPU ' + str(gpu_id) if gpu_id >= 0 else 'CPU'}")
+    logger.info(
+        f"Model {model_name} loaded on {'GPU ' + str(gpu_id) if gpu_id >= 0 else 'CPU'}"
+    )
 
     # Obtain the model's maximum context length
     max_length = model.config.max_position_embeddings
     stride = max_length // 2
     logger.info(f"Model max context length: {max_length}, Using stride: {stride}")
+
     (
         patient_embeddings,
         patient_ids,
@@ -219,7 +249,7 @@ def save_embeddings(
     logger.info(f"Embeddings saved for {len(patient_ids)} patients")
 
 
-def generate_and_save_embeddings(patient_data, output_path, use_gpu):
+def generate_and_save_embeddings(patient_data, output_path, use_gpu, model_name):
     start_time = datetime.now()
     logger.info(f"Starting embedding generation at {start_time}")
 
@@ -231,7 +261,7 @@ def generate_and_save_embeddings(patient_data, output_path, use_gpu):
         with mp.Pool(num_gpus) as pool:
             results = pool.starmap(
                 generate_embeddings_gpu,
-                [(split, i) for i, split in enumerate(split_data)],
+                [(split, i, model_name) for i, split in enumerate(split_data)],
             )
 
         all_embeddings = []
@@ -254,7 +284,7 @@ def generate_and_save_embeddings(patient_data, output_path, use_gpu):
             all_survival_times,
             all_death_indicators,
         ) = generate_embeddings_gpu(
-            patient_data, 0 if use_gpu and torch.cuda.is_available() else -1
+            patient_data, 0 if use_gpu and torch.cuda.is_available() else -1, model_name
         )
 
     save_embeddings(
@@ -285,6 +315,19 @@ if __name__ == "__main__":
         "--use_gpu", action="store_true", help="Use GPU for computation if available"
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--model",
+        type=str,
+        choices=[
+            "biogpt",
+            "biogpt-large",
+            "gatortron-base",
+            "gatortron-medium",
+            "gatortron-large",
+        ],
+        default="biogpt",
+        help="Choose the model to use for embedding generation",
+    )
     args = parser.parse_args()
 
     if args.debug:
@@ -294,4 +337,4 @@ if __name__ == "__main__":
     patient_data = pd.read_pickle(args.patient_data)
     logger.info(f"Loaded data for {len(patient_data)} patients")
 
-    generate_and_save_embeddings(patient_data, args.output, args.use_gpu)
+    generate_and_save_embeddings(patient_data, args.output, args.use_gpu, args.model)
