@@ -130,7 +130,7 @@ class AttentionAggregator(nn.Module):
     def __init__(
         self,
         embedding_dim,
-        num_documents=5,
+        num_documents=1,
         use_attention=True,
         use_time_weighting=True,
     ):
@@ -140,42 +140,42 @@ class AttentionAggregator(nn.Module):
         self.use_attention = use_attention
         self.use_time_weighting = use_time_weighting
 
-        if self.use_attention:
+        if self.use_attention and num_documents > 1:
             self.attention = nn.Linear(embedding_dim, 1)
 
-        if self.use_time_weighting:
+        if self.use_time_weighting and num_documents > 1:
             self.gamma = nn.Parameter(torch.tensor([0.1]))
 
-    def forward(self, embeddings, time_diffs):
-        # Create a mask for valid (non-padded) documents
-        valid_mask = (time_diffs != -1).float().unsqueeze(-1)
+    def forward(self, embeddings, time_diffs=None):
+        if embeddings.dim() == 2:  # Single document case
+            return embeddings
+
+        # Multi-document case
+        valid_mask = (
+            (time_diffs != -1).float().unsqueeze(-1)
+            if time_diffs is not None
+            else torch.ones_like(embeddings[:, :, 0]).unsqueeze(-1)
+        )
 
         if self.use_attention:
-            # Calculate attention weights
             attention_weights = self.attention(embeddings)
-            attention_weights = F.softmax(attention_weights, dim=1)
+            attention_weights = torch.softmax(attention_weights, dim=1)
         else:
-            # Use uniform weights for valid documents, zero for padded ones
             attention_weights = valid_mask / valid_mask.sum(dim=1, keepdim=True).clamp(
                 min=1
             )
 
-        if self.use_time_weighting:
-            # Calculate decay factor
-            decay_factor = torch.exp(-time_diffs.clamp(min=0) * self.gamma)
-            decay_factor = decay_factor.unsqueeze(-1)
-
-            # Combine attention weights and decay factor
+        if self.use_time_weighting and time_diffs is not None:
+            decay_factor = torch.exp(-time_diffs.clamp(min=0) * self.gamma).unsqueeze(
+                -1
+            )
             combined_weights = attention_weights * decay_factor * valid_mask
         else:
             combined_weights = attention_weights * valid_mask
 
-        # Normalize weights
         combined_weights = combined_weights / combined_weights.sum(
             dim=1, keepdim=True
         ).clamp(min=1e-8)
-
-        # Apply combined weights to embeddings
         aggregated_embedding = torch.sum(embeddings * combined_weights, dim=1)
         return aggregated_embedding
 
@@ -185,7 +185,7 @@ class BinaryClassificationModel(nn.Module):
         self,
         embedding_dim,
         num_structured_features=0,
-        num_documents=5,
+        num_documents=1,
         use_attention=True,
         use_time_weighting=True,
     ):
@@ -204,15 +204,19 @@ class BinaryClassificationModel(nn.Module):
         self.dropout = nn.Dropout(0.3)
         self.relu = nn.ReLU()
 
-    def forward(self, document_embeddings, time_diffs, structured_data=None):
-        # Normalize only non-zero embeddings
-        norm = torch.norm(document_embeddings, p=2, dim=2, keepdim=True)
-        norm = torch.where(norm == 0, torch.ones_like(norm), norm)
-        document_embeddings = document_embeddings / norm
-
-        aggregated_embedding = self.attention_aggregator(
-            document_embeddings, time_diffs
-        )
+    def forward(self, document_embeddings, time_diffs=None, structured_data=None):
+        if document_embeddings.dim() == 2:
+            # Single document case
+            aggregated_embedding = document_embeddings
+        else:
+            # Multi-document case
+            # Normalize only non-zero embeddings
+            norm = torch.norm(document_embeddings, p=2, dim=2, keepdim=True)
+            norm = torch.where(norm == 0, torch.ones_like(norm), norm)
+            document_embeddings = document_embeddings / norm
+            aggregated_embedding = self.attention_aggregator(
+                document_embeddings, time_diffs
+            )
 
         if structured_data is not None:
             combined_features = torch.cat(

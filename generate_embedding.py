@@ -197,26 +197,22 @@ def save_embeddings(
 def generate_embeddings_gpu(patient_data, gpu_id, model_name):
     logger.info(f"Initializing embedding generation on GPU {gpu_id}")
 
-    if model_name == "biogpt":
-        tokenizer = BioGptTokenizer.from_pretrained("microsoft/biogpt")
-        model = BioGptForCausalLM.from_pretrained("microsoft/biogpt")
-    elif model_name == "biogpt-large":
-        tokenizer = BioGptTokenizer.from_pretrained("microsoft/BioGPT-large")
-        model = BioGptForCausalLM.from_pretrained("microsoft/BioGPT-large")
-    elif model_name == "gatortron-base":
-        tokenizer = AutoTokenizer.from_pretrained("UFNLP/gatortron-base")
-        model = AutoModel.from_pretrained("UFNLP/gatortron-base")
-    elif model_name == "gatortron-medium":
-        tokenizer = AutoTokenizer.from_pretrained("UFNLP/gatortron-medium")
-        model = AutoModel.from_pretrained("UFNLP/gatortron-medium")
-    elif model_name == "gatortron-large":
-        tokenizer = AutoTokenizer.from_pretrained("UFNLP/gatortron-large")
-        model = AutoModel.from_pretrained("UFNLP/gatortron-large")
-    elif model_name == "biomistral":
-        tokenizer = AutoTokenizer.from_pretrained("BioMistral/BioMistral-7B")
-        model = AutoModel.from_pretrained("BioMistral/BioMistral-7B")
+    if args.model in ["biogpt", "biogpt-large"]:
+        model_name = (
+            "microsoft/biogpt" if args.model == "biogpt" else "microsoft/BioGPT-large"
+        )
+        tokenizer = BioGptTokenizer.from_pretrained(model_name)
+        model = BioGptForCausalLM.from_pretrained(model_name)
+    elif args.model.startswith("gatortron"):
+        model_name = f"UFNLP/{args.model}"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
+    elif args.model == "biomistral":
+        model_name = "BioMistral/BioMistral-7B"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
     else:
-        raise ValueError(f"Unsupported model: {model_name}")
+        raise ValueError(f"Unsupported model: {args.model}")
 
     device = torch.device(f"cuda:{gpu_id}" if gpu_id >= 0 else "cpu")
     model = model.to(device)
@@ -227,6 +223,7 @@ def generate_embeddings_gpu(patient_data, gpu_id, model_name):
     # Obtain the model's maximum context length
     max_length = model.config.max_position_embeddings
     stride = max_length // 2
+    # stride = max_length
     logger.info(f"Model max context length: {max_length}, Using stride: {stride}")
 
     (

@@ -119,7 +119,7 @@ def evaluate_model(model, data_loader, y_train, y_val, device, model_type):
     all_risk_predictions = np.array(all_risk_predictions)
 
     c_index = concordance_index_ipcw(y_train, y_val, all_risk_predictions)[0]
-    times = np.array([180, 365])
+    times = np.array([15, 30])
     auc, mean_auc = cumulative_dynamic_auc(y_train, y_val, all_risk_predictions, times)
 
     return c_index, auc, mean_auc
@@ -188,13 +188,11 @@ def main(config_path, output_dir):
         config=config,
     )
 
-    final_c_index, final_auc, final_mean_auc = evaluate_model(
+    final_c_index, _, final_mean_auc = evaluate_model(
         best_model, val_loader, y_train, y_val, device, config["model"]["type"]
     )
     print(f"Best Validation C-index: {best_val_c_index:.3f}")
     print(f"Final C-index (IPCW): {final_c_index:.3f}")
-    print(f"Final AUC at 6 months: {final_auc[0]:.3f}")
-    print(f"Final AUC at 12 months: {final_auc[1]:.3f}")
     print(f"Final Mean AUC: {final_mean_auc:.3f}")
 
 

@@ -130,7 +130,7 @@ def prepare_data(data_dict, config):
     survival_times, event_indicators = add_censoring_variability(
         data_dict["survival_times"],
         data_dict["event_indicators"],
-        variability=config["data"]["censoring_variability"],
+        censoring_time=config["data"]["censoring_time"],
     )
 
     y = Surv.from_arrays(event_indicators, survival_times)
@@ -197,16 +197,15 @@ def custom_collate(batch):
         )
 
 
-def add_censoring_variability(
-    survival_times, event_indicators, max_time=365, variability=30
-):
+def add_censoring_variability(survival_times, event_indicators, censoring_time=365):
+    variability = 0.1 * censoring_time
     for i in range(len(survival_times)):
         if event_indicators[i] == 0:  # Censored patient
-            if survival_times[i] >= max_time:
-                survival_times[i] = max_time + np.random.uniform(0, variability)
+            if survival_times[i] >= censoring_time:
+                survival_times[i] = censoring_time + np.random.uniform(0, variability)
         else:  # Patient experienced the event
-            if survival_times[i] > max_time:
-                survival_times[i] = max_time + np.random.uniform(0, variability)
+            if survival_times[i] > censoring_time:
+                survival_times[i] = censoring_time + np.random.uniform(0, variability)
                 event_indicators[i] = 0  # Change to censored
 
     return survival_times, event_indicators

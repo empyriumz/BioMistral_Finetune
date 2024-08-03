@@ -1,20 +1,20 @@
 data:
-  embeddings_path: "data/sampled_patient_embedding_gatortron_base.h5"
+  embeddings_path: "data/sampled_patient_embedding_no_hospice_gatortron_base_no_stride.h5"
   demographics_path: "data/patient_demographics.pkl.gz"
-  censoring_variability: 30  # Range of variability to add in days to the censoring time
+  censoring_time: 30  # Censoring time in days
 
 model:
   embedding_dim: 1024
   type: "embedding_structured"  # Options: "embedding_only" or "embedding_structured"
   num_documents: 5
   attention: true
-  time_weighting: false
+  time_weighting: true
   save_path: "trained_model.pth"
 
 training:
   random_seed: 1
   batch_size: 128
-  num_epochs: 80
+  num_epochs: 250
   val_split: 0.25
   early_stopping_patience: 8
   learning_rate: 0.0001
