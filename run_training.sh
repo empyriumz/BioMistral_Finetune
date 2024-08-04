@@ -11,7 +11,7 @@ log_file="$run_folder/training.log"
 start_time=$(date +%s)
 
 # Modify the command to save output to the new folder
-cmd="python -u train_binary_classification.py --config config.yaml --output_dir $run_folder"
+cmd="python -u train_binary_classification.py --config configs/binary_classification.yaml --output_dir $run_folder"
 
 # Write the command to the terminal and log file
 echo "Running command: $cmd" | tee -a "$log_file"

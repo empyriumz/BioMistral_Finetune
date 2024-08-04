@@ -6,7 +6,7 @@ import numpy as np
 import random
 from torch.utils.data import DataLoader
 from sksurv.metrics import concordance_index_ipcw, cumulative_dynamic_auc
-from model import BinaryClassificationModel
+from models.binary_classifier import BinaryClassificationModel
 from data_processing import load_data, prepare_data, custom_collate
 from utils import save_config
 

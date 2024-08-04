@@ -1,11 +1,90 @@
 import torch
 import pandas as pd
+import h5py
 import numpy as np
 from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sksurv.util import Surv
-import h5py
+
+
+class PatientNotesFinetuneDataset(Dataset):
+    def __init__(
+        self, data_path, tokenizer, max_length=512, stride=256, num_documents=5
+    ):
+        self.data = pd.read_pickle(data_path)
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.stride = stride
+        self.num_documents = num_documents
+
+    def __len__(self):
+        return len(self.data)
+
+    def process_document(self, text):
+        tokens = self.tokenizer.encode(text, add_special_tokens=True)
+        chunks = []
+        for i in range(0, len(tokens), self.stride):
+            chunk = tokens[i : i + self.max_length]
+            if len(chunk) < self.max_length:
+                chunk = chunk + [self.tokenizer.pad_token_id] * (
+                    self.max_length - len(chunk)
+                )
+            elif len(chunk) > self.max_length:
+                chunk = chunk[: self.max_length - 1] + [self.tokenizer.sep_token_id]
+            chunks.append(chunk)
+        return chunks
+
+    def __getitem__(self, idx):
+        row = self.data.iloc[idx]
+
+        docs = []
+        times = []
+
+        for i in range(self.num_documents):
+            if i < len(row["notes"]):
+                note, time = row["notes"][i]
+                if note:
+                    chunks = self.process_document(note)
+                    docs.append(chunks)
+                    times.append(time)
+                else:
+                    docs.append([[self.tokenizer.pad_token_id] * self.max_length])
+                    times.append(-1)
+            else:
+                docs.append([[self.tokenizer.pad_token_id] * self.max_length])
+                times.append(-1)
+
+        return {
+            "input_ids": docs,
+            "time_info": torch.tensor(times, dtype=torch.float32),
+            "labels": torch.tensor(row["ind_death"], dtype=torch.float32),
+        }
+
+
+def custom_collate_fn_lora(batch):
+    max_chunks = max(max(len(doc) for doc in item["input_ids"]) for item in batch)
+
+    input_ids = [
+        [
+            doc + [[0] * len(doc[0])] * (max_chunks - len(doc))
+            for doc in item["input_ids"]
+        ]
+        for item in batch
+    ]
+    input_ids = torch.tensor(input_ids)
+
+    attention_mask = (input_ids != 0).float()
+
+    time_info = torch.stack([item["time_info"] for item in batch])
+    labels = torch.stack([item["labels"] for item in batch])
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "time_info": time_info,
+        "labels": labels,
+    }
 
 
 class PatientDataset(Dataset):

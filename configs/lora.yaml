@@ -1,0 +1,26 @@
+data:
+  train_path: "data/sampled_patient_discharge_notes.pkl.gz"
+  val_path: "data/sampled_patient_discharge_notes_validation.pkl.gz"
+  max_length: 512
+  stride: 256
+  num_documents: 5
+
+model:
+  name: "UFNLP/gatortron-base"
+  save_path: "models/lora_gatortron"
+
+lora:
+  rank: 4
+  alpha: 8
+  dropout: 0.1
+
+training:
+  random_seed: 1
+  batch_size: 2
+  accumulate_grad_steps: 4
+  num_epochs: 10
+  learning_rate: 0.00001
+  early_stopping_patience: 5
+  use_gpu: true
+  gpu_id: 0
+  num_workers: 16
